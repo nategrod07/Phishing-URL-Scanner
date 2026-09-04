@@ -1,6 +1,6 @@
-"""Preprocessing + model pipeline: one-hot encoding for categorical URL
-features, standard scaling for numeric ones, feeding a classifier.
-"""
+#Preprocessing + model pipeline: one-hot encoding for categorical URL
+#features, standard scaling for numeric ones, feeding a classifier.
+
 import pandas as pd
 from sklearn.compose import ColumnTransformer
 from sklearn.ensemble import RandomForestClassifier

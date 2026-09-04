@@ -1,7 +1,7 @@
 # Phishing Detection (URL + Email)
 
 ML pipelines that classify URLs and emails as phishing or legitimate using
-engineered lexical/structural features — one-hot encoding for categorical
+engineered lexical/structural features one-hot encoding for categorical
 fields and feature scaling for numeric fields feeding a classifier.
 
 ## Approach
@@ -30,7 +30,7 @@ combined).
 legitimate mail from a handful of corporate domains (e.g. Enron), so
 `sender_domain="other"` is heavily correlated with phishing in this
 dataset. A legitimate email from an uncommon domain (e.g. a real company's
-own domain) can get a false-positive phishing score. Worth addressing with
+own domain) can get a false positive phishing score. Worth addressing with
 a larger/more diverse legitimate-mail sample or dropping `sender_domain`
 in favor of domain-age/reputation features.
 
