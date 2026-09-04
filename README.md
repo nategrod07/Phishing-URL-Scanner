@@ -98,6 +98,10 @@ python -m venv .venv && source .venv/bin/activate
 pip install -e ".[dev]"
 ```
 
+`[dev]` adds pytest plus `kagglehub` for the dataset download. For runtime
+only, `pip install -e .` is enough; add `[data]` if you need the Kaggle
+download without the test tooling.
+
 ## Train
 
 **URL mode** (synthetic demo data by default, or a `url,label` CSV via `--csv`):
@@ -106,8 +110,9 @@ pip install -e ".[dev]"
 python -m phishing_ml.train --mode url --classifier random_forest
 ```
 
-The synthetic classes are separable by construction, so a perfect score
-there means the pipeline runs — not that the model is good.
+`--n-per-class` sets how many synthetic rows are generated per class
+(default 800). The synthetic classes are separable by construction, so a
+perfect score there means the pipeline runs — not that the model is good.
 
 **Email mode** — download the dataset once:
 
@@ -146,12 +151,19 @@ vectorised pass; the CLI is a thin wrapper over it.
 pytest
 ```
 
-72 tests covering URL parsing edge cases (userinfo, ports, IP hosts,
-missing schemes, fragments), email extraction robustness (NaN fields,
-absent columns, flag-vs-count handling), ingest accounting (chunk-boundary
-dedupe, chunk-size invariance, balanced sampling, retention reporting), and
+Covers URL parsing edge cases (userinfo, ports, IP hosts, missing schemes,
+fragments), email extraction robustness (NaN fields, absent columns,
+flag-vs-count handling), ingest accounting (chunk-boundary dedupe,
+chunk-size invariance, balanced sampling, retention reporting), and
 pipeline behaviour (rare-category grouping, unseen categories, save/load
 roundtrip, per-classifier fit).
+
+[tests/test_readme.py](tests/test_readme.py) keeps this file honest: it
+fails if the README documents a flag no parser defines, omits one the CLI
+accepts, links a file that does not exist, names an unknown classifier, or
+tells the reader to import a package that is not a declared dependency.
+Measured numbers (accuracy, timings) can only be checked by re-running the
+benchmark, so those are still verified by hand when the model changes.
 
 On macOS/Python 3.9 with numpy 2.0.2, `LogisticRegression` emits spurious
 `matmul` RuntimeWarnings from the Accelerate BLAS backend. It reproduces on

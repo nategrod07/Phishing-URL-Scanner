@@ -41,7 +41,7 @@ def predict_emails(model_path: str, emails: Sequence[dict]) -> List[dict]:
     return [{**email, **result} for email, result in zip(emails, _score(pipeline, features))]
 
 
-def main() -> None:
+def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("urls", nargs="*", help="[url mode] URLs to score")
     parser.add_argument("--mode", default="url", choices=["url", "email"])
@@ -49,6 +49,11 @@ def main() -> None:
     parser.add_argument("--sender", default="", help="[email mode] Sender address")
     parser.add_argument("--subject", default="", help="[email mode] Subject line")
     parser.add_argument("--body", default="", help="[email mode] Body text")
+    return parser
+
+
+def main() -> None:
+    parser = build_parser()
     args = parser.parse_args()
 
     if args.mode == "url":

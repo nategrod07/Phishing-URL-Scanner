@@ -1,7 +1,7 @@
 [project]
 name = "phishing-url-ml"
 version = "0.1.0"
-description = "Phishing URL detection with one-hot encoding + feature scaling"
+description = "Phishing URL and email detection with one-hot encoding + feature scaling"
 requires-python = ">=3.9"
 dependencies = [
     "pandas>=2.0",
@@ -11,7 +11,13 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-dev = ["pytest>=7.0"]
+# Fetches the Kaggle email corpus; not needed to train on a local CSV.
+data = ["kagglehub>=0.3"]
+dev = [
+    "pytest>=7.0",
+    "kagglehub>=0.3",
+    "tomli>=2.0; python_version < '3.11'",
+]
 
 [build-system]
 requires = ["setuptools>=68"]

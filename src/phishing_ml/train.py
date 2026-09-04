@@ -74,7 +74,7 @@ def evaluate(pipeline, X_test, y_test) -> None:
     print(f"Log loss: {log_loss(y_test, y_proba):.4f}")
 
 
-def main() -> None:
+def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--mode", default="url", choices=["url", "email"])
     parser.add_argument("--classifier", default="logistic_regression", choices=CLASSIFIERS)
@@ -98,7 +98,11 @@ def main() -> None:
     email_group.add_argument("--keep-duplicates", action="store_true",
                              help="Keep duplicate emails (they leak across the "
                                   "train/test split and inflate scores)")
-    args = parser.parse_args()
+    return parser
+
+
+def main() -> None:
+    args = build_parser().parse_args()
 
     if args.mode == "url":
         X, y, feature_set = load_url_training_data(args)
