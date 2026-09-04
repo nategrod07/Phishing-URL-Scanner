@@ -1,29 +1,84 @@
-"""Dataset loading utilities.
+"""Dataset loading.
 
-For a real project, point `load_csv` at a labeled URL dataset (columns:
-`url`, `label` with label in {0, 1}, 1 = phishing). A small synthetic
-generator is included so the pipeline runs end-to-end with no external
-data.
+The email corpus is ingested in chunks: each chunk of raw records is turned
+into features immediately and the bulky text is released before the next
+chunk is read. Peak memory therefore tracks the chunk size, not the corpus
+size, so the loader behaves the same on the bundled ~82k emails as it would
+on several million.
+
+Nothing is silently discarded. Rows are dropped only for reasons that make
+them unusable (no label), duplicates are dropped only when asked, and every
+loader returns an `IngestReport` accounting for the difference between rows
+read and rows kept.
 """
 import glob
 import os
 import random
-from typing import Optional
+from dataclasses import dataclass, field
+from typing import Dict, Iterator, List, Optional, Tuple
 
 import pandas as pd
 
-# Files from kaggle.com/datasets/naserabdullahalam/phishing-email-dataset
-# that carry structured columns (sender/subject/body/urls) rather than the
-# single pre-flattened `text_combined` column in phishing_email.csv.
-EMAIL_DATASET_FILES = [
+from .email_features import extract_email_features
+
+# Files from kaggle.com/datasets/naserabdullahalam/phishing-email-dataset that
+# carry structured columns. The flattened `phishing_email.csv` is excluded: it
+# has only `text_combined`, so it cannot supply sender_domain and duplicates
+# content already present in the files below.
+EMAIL_DATASET_FILES = (
     "CEAS_08.csv",
     "Enron.csv",
     "Ling.csv",
     "Nazario.csv",
     "Nigerian_Fraud.csv",
     "SpamAssasin.csv",
-]
-EMAIL_COLUMNS = ["sender", "subject", "body", "urls", "label"]
+)
+
+# Columns worth reading; `receiver`/`date` are skipped to keep the read narrow.
+EMAIL_SOURCE_COLUMNS = ("sender", "subject", "body", "urls", "label")
+
+# Used to identify duplicate emails across corpora.
+_DEDUPE_KEY = ["sender", "subject", "body"]
+
+DEFAULT_CHUNKSIZE = 50_000
+
+
+@dataclass
+class IngestReport:
+    """Accounting for every row between the CSVs and the feature matrix."""
+
+    rows_read: int = 0
+    dropped_missing_label: int = 0
+    dropped_duplicates: int = 0
+    dropped_sampling: int = 0
+    rows_per_file: Dict[str, int] = field(default_factory=dict)
+
+    @property
+    def rows_kept(self) -> int:
+        return (
+            self.rows_read
+            - self.dropped_missing_label
+            - self.dropped_duplicates
+            - self.dropped_sampling
+        )
+
+    @property
+    def retention(self) -> float:
+        return self.rows_kept / self.rows_read if self.rows_read else 0.0
+
+    def summary(self) -> str:
+        return (
+            f"read {self.rows_read:,} rows -> kept {self.rows_kept:,} "
+            f"({self.retention:.1%}); dropped: "
+            f"{self.dropped_missing_label:,} unlabelled, "
+            f"{self.dropped_duplicates:,} duplicate, "
+            f"{self.dropped_sampling:,} sampled out"
+        )
+
+
+# --------------------------------------------------------------------------
+# URL data
+# --------------------------------------------------------------------------
 
 LEGIT_DOMAINS = [
     "github.com", "wikipedia.org", "google.com", "amazon.com",
@@ -36,96 +91,47 @@ PHISHING_TLDS = ["xyz", "top", "ru", "info", "click", "tk"]
 PHISHING_WORDS = ["login", "secure", "verify", "update", "account", "signin", "confirm"]
 
 
-def _random_legit_url() -> str:
-    domain = random.choice(LEGIT_DOMAINS)
-    path = random.choice(LEGIT_PATHS)
-    return f"https://{domain}{path}"
+def _random_legit_url(rng: random.Random) -> str:
+    return f"https://{rng.choice(LEGIT_DOMAINS)}{rng.choice(LEGIT_PATHS)}"
 
 
-def _random_phishing_url() -> str:
-    word = random.choice(PHISHING_WORDS)
-    brand = random.choice(["paypal", "amazon", "bankofamerica", "appleid", "netflix"])
-    tld = random.choice(PHISHING_TLDS)
-    suffix = "".join(random.choices("abcdefghij0123456789", k=6))
-    use_ip = random.random() < 0.15
-    if use_ip:
-        host = f"{random.randint(1,255)}.{random.randint(0,255)}.{random.randint(0,255)}.{random.randint(0,255)}"
+def _random_phishing_url(rng: random.Random) -> str:
+    word = rng.choice(PHISHING_WORDS)
+    brand = rng.choice(["paypal", "amazon", "bankofamerica", "appleid", "netflix"])
+    suffix = "".join(rng.choices("abcdefghij0123456789", k=6))
+    if rng.random() < 0.15:
+        host = ".".join(str(rng.randint(0, 255)) for _ in range(4))
     else:
-        host = f"{word}-{brand}-{suffix}.{tld}"
-    scheme = "http" if random.random() < 0.7 else "https"
-    return f"{scheme}://{host}/{word}.php?id={random.randint(1000,9999)}"
+        host = f"{word}-{brand}-{suffix}.{rng.choice(PHISHING_TLDS)}"
+    scheme = "http" if rng.random() < 0.7 else "https"
+    return f"{scheme}://{host}/{word}.php?id={rng.randint(1000, 9999)}"
 
 
 def generate_synthetic_dataset(n_per_class: int = 500, seed: int = 42) -> pd.DataFrame:
-    """Generate a balanced synthetic dataset for demo/dev purposes.
+    """Generate a balanced synthetic URL dataset for demo/dev purposes.
 
-    Replace with `load_csv` pointed at a real labeled dataset for anything
-    beyond pipeline development.
+    The two classes are separable almost by construction, so scores on this
+    data say only that the pipeline runs -- not that the model is good. Use a
+    real labelled corpus for anything else.
     """
     rng = random.Random(seed)
-    random.seed(seed)
-
-    rows = []
-    for _ in range(n_per_class):
-        rows.append({"url": _random_legit_url(), "label": 0})
-    for _ in range(n_per_class):
-        rows.append({"url": _random_phishing_url(), "label": 1})
-
-    df = pd.DataFrame(rows)
-    return df.sample(frac=1, random_state=seed).reset_index(drop=True)
+    rows = [{"url": _random_legit_url(rng), "label": 0} for _ in range(n_per_class)]
+    rows += [{"url": _random_phishing_url(rng), "label": 1} for _ in range(n_per_class)]
+    return pd.DataFrame(rows).sample(frac=1, random_state=seed).reset_index(drop=True)
 
 
-def load_csv(path: str, url_col: str = "url", label_col: str = "label") -> pd.DataFrame:
+def load_url_csv(path: str, url_col: str = "url", label_col: str = "label") -> pd.DataFrame:
     df = pd.read_csv(path)
     return df.rename(columns={url_col: "url", label_col: "label"})[["url", "label"]]
 
 
-def load_email_dataset(dataset_dir: str, sample_size: Optional[int] = None, seed: int = 42) -> pd.DataFrame:
-    """Load and combine the structured CSVs from the Kaggle phishing-email
-    dataset (kaggle.com/datasets/naserabdullahalam/phishing-email-dataset).
-
-    Only files with sender/subject/body/urls columns are used (Enron/Ling
-    lack sender+urls; those columns are filled with NaN for them). The
-    flattened `phishing_email.csv` (text_combined + label only) is skipped
-    since it doesn't support the categorical (sender_domain) feature.
-    """
-    frames = []
-    for fname in EMAIL_DATASET_FILES:
-        fpath = os.path.join(dataset_dir, fname)
-        if not os.path.exists(fpath):
-            continue
-        df = pd.read_csv(fpath)
-        for col in EMAIL_COLUMNS:
-            if col not in df.columns:
-                df[col] = None
-        df["source"] = fname
-        frames.append(df[EMAIL_COLUMNS + ["source"]])
-
-    if not frames:
-        raise FileNotFoundError(
-            f"No known dataset CSVs found under {dataset_dir}. "
-            f"Expected one of: {EMAIL_DATASET_FILES}"
-        )
-
-    combined = pd.concat(frames, ignore_index=True)
-    combined = combined.dropna(subset=["label"]).reset_index(drop=True)
-    combined["label"] = combined["label"].astype(int)
-
-    if sample_size and sample_size < len(combined):
-        combined = combined.groupby("label", group_keys=False)[combined.columns.tolist()].apply(
-            lambda g: g.sample(
-                n=min(len(g), sample_size // combined["label"].nunique()),
-                random_state=seed,
-            )
-        )
-        combined = combined.sample(frac=1, random_state=seed).reset_index(drop=True)
-
-    return combined
+# --------------------------------------------------------------------------
+# Email data
+# --------------------------------------------------------------------------
 
 
 def find_kagglehub_email_dataset() -> str:
-    """Locate the most recently downloaded copy of the phishing-email
-    dataset in the local kagglehub cache."""
+    """Locate the newest cached copy of the phishing-email dataset."""
     pattern = os.path.expanduser(
         "~/.cache/kagglehub/datasets/naserabdullahalam/phishing-email-dataset/versions/*"
     )
@@ -137,3 +143,110 @@ def find_kagglehub_email_dataset() -> str:
             '  kagglehub.dataset_download("naserabdullahalam/phishing-email-dataset")'
         )
     return matches[-1]
+
+
+def _existing_dataset_files(dataset_dir: str) -> List[str]:
+    files = [f for f in EMAIL_DATASET_FILES if os.path.exists(os.path.join(dataset_dir, f))]
+    if not files:
+        raise FileNotFoundError(
+            f"No known dataset CSVs under {dataset_dir}. Expected any of: "
+            f"{', '.join(EMAIL_DATASET_FILES)}"
+        )
+    return files
+
+
+def iter_email_chunks(
+    dataset_dir: str, chunksize: int = DEFAULT_CHUNKSIZE
+) -> Iterator[Tuple[str, pd.DataFrame]]:
+    """Yield `(filename, chunk)` pairs of raw email records.
+
+    Only the columns in EMAIL_SOURCE_COLUMNS are read, and files missing some
+    of them (Enron and Ling have no sender/urls) still yield their rows --
+    the extractor treats absent columns as empty rather than dropping ~32k
+    otherwise-usable emails.
+    """
+    for filename in _existing_dataset_files(dataset_dir):
+        path = os.path.join(dataset_dir, filename)
+        available = set(pd.read_csv(path, nrows=0).columns)
+        usecols = [c for c in EMAIL_SOURCE_COLUMNS if c in available]
+        for chunk in pd.read_csv(path, usecols=usecols, chunksize=chunksize, dtype=object):
+            yield filename, chunk
+
+
+def load_email_features(
+    dataset_dir: str,
+    chunksize: int = DEFAULT_CHUNKSIZE,
+    drop_duplicates: bool = True,
+    sample_size: Optional[int] = None,
+    seed: int = 42,
+) -> Tuple[pd.DataFrame, pd.Series, IngestReport]:
+    """Stream the email corpus into a feature matrix.
+
+    Returns `(features, labels, report)`. `sample_size` caps the total rows,
+    balanced across classes; leaving it as None -- the default -- uses every
+    labelled row.
+    """
+    report = IngestReport()
+    seen_hashes: set = set()
+    feature_frames: List[pd.DataFrame] = []
+    label_frames: List[pd.Series] = []
+
+    for filename, chunk in iter_email_chunks(dataset_dir, chunksize):
+        report.rows_read += len(chunk)
+        report.rows_per_file[filename] = report.rows_per_file.get(filename, 0) + len(chunk)
+
+        labels = pd.to_numeric(chunk.get("label"), errors="coerce")
+        labelled = labels.notna()
+        report.dropped_missing_label += int((~labelled).sum())
+        chunk = chunk[labelled]
+        labels = labels[labelled].astype(int)
+
+        if drop_duplicates and len(chunk):
+            key = pd.util.hash_pandas_object(
+                pd.DataFrame({c: _column_or_blank(chunk, c) for c in _DEDUPE_KEY}),
+                index=False,
+            )
+            fresh = ~key.isin(seen_hashes) & ~key.duplicated()
+            report.dropped_duplicates += int((~fresh).sum())
+            seen_hashes.update(key[fresh].tolist())
+            chunk, labels = chunk[fresh], labels[fresh]
+
+        if not len(chunk):
+            continue
+
+        # Features are computed here so the chunk's text can be freed now.
+        feature_frames.append(extract_email_features(chunk))
+        label_frames.append(labels)
+
+    if not feature_frames:
+        raise ValueError(f"No labelled email rows found under {dataset_dir}")
+
+    features = pd.concat(feature_frames, ignore_index=True)
+    labels = pd.concat(label_frames, ignore_index=True)
+
+    if sample_size and sample_size < len(features):
+        keep = _balanced_sample_index(labels, sample_size, seed)
+        report.dropped_sampling = len(features) - len(keep)
+        features = features.loc[keep].reset_index(drop=True)
+        labels = labels.loc[keep].reset_index(drop=True)
+
+    return features, labels, report
+
+
+def _column_or_blank(frame: pd.DataFrame, name: str) -> pd.Series:
+    if name not in frame.columns:
+        return pd.Series("", index=frame.index, dtype="object")
+    return frame[name].fillna("").astype(str)
+
+
+def _balanced_sample_index(labels: pd.Series, sample_size: int, seed: int) -> pd.Index:
+    """Pick up to `sample_size` rows split evenly across the label classes."""
+    classes = labels.unique()
+    per_class = max(sample_size // len(classes), 1)
+    picks = [
+        labels[labels == cls].sample(
+            n=min(per_class, int((labels == cls).sum())), random_state=seed
+        ).index
+        for cls in classes
+    ]
+    return pd.Index([i for idx in picks for i in idx]).sort_values()

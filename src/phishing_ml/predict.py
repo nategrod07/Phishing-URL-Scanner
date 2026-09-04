@@ -1,64 +1,67 @@
-"""Score a URL or email with a trained model.
+"""Score URLs or emails with a trained model.
 
 Usage:
-    python -m phishing_ml.predict --model models/phishing_model.joblib "http://paypal-secure-login.xyz/verify"
+    python -m phishing_ml.predict --model models/phishing_model.joblib \
+        "http://paypal-secure-login.xyz/verify"
+
     python -m phishing_ml.predict --mode email --model models/email_model.joblib \
-        --sender "support@paypal-secure.xyz" --subject "Verify your account now" \
-        --body "Click here to verify your account or it will be suspended."
+        --sender "support@paypal-secure.xyz" --subject "Verify your account" \
+        --body "Click here to confirm your password."
 """
 import argparse
+from typing import List, Sequence
 
 import joblib
+import pandas as pd
 
-from .email_features import extract_email_features
-from .pipeline import build_feature_frame
+from .email_features import EMAIL_FEATURES
+from .url_features import URL_FEATURES
 
 
-def predict_urls(model_path: str, urls: list) -> list:
-    pipeline = joblib.load(model_path)
-    X = build_feature_frame(urls)
-    proba = pipeline.predict_proba(X)[:, 1]
-    pred = pipeline.predict(X)
+def _score(pipeline, features: pd.DataFrame) -> List[dict]:
+    proba = pipeline.predict_proba(features)[:, 1]
+    predictions = pipeline.predict(features)
     return [
-        {"url": u, "prediction": "phishing" if p else "legit", "phishing_probability": float(prob)}
-        for u, p, prob in zip(urls, pred, proba)
+        {"prediction": "phishing" if p else "legit", "phishing_probability": float(prob)}
+        for p, prob in zip(predictions, proba)
     ]
 
 
-def predict_email(model_path: str, sender: str, subject: str, body: str) -> dict:
-    import pandas as pd
-
+def predict_urls(model_path: str, urls: Sequence[str]) -> List[dict]:
     pipeline = joblib.load(model_path)
-    feats = extract_email_features(sender=sender, subject=subject, body=body)
-    X = pd.DataFrame([feats])
-    proba = pipeline.predict_proba(X)[:, 1][0]
-    pred = pipeline.predict(X)[0]
-    return {
-        "sender": sender,
-        "subject": subject,
-        "prediction": "phishing" if pred else "legit",
-        "phishing_probability": float(proba),
-    }
+    features = URL_FEATURES.build(pd.DataFrame({"url": list(urls)}))
+    return [{"url": url, **result} for url, result in zip(urls, _score(pipeline, features))]
 
 
-def main():
+def predict_emails(model_path: str, emails: Sequence[dict]) -> List[dict]:
+    """Score a batch of `{sender, subject, body}` dicts in one pass."""
+    pipeline = joblib.load(model_path)
+    records = pd.DataFrame(list(emails), columns=["sender", "subject", "body"]).fillna("")
+    features = EMAIL_FEATURES.build(records)
+    return [{**email, **result} for email, result in zip(emails, _score(pipeline, features))]
+
+
+def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("urls", nargs="*", help="[url mode] One or more URLs to score")
+    parser.add_argument("urls", nargs="*", help="[url mode] URLs to score")
     parser.add_argument("--mode", default="url", choices=["url", "email"])
     parser.add_argument("--model", default="models/phishing_model.joblib")
     parser.add_argument("--sender", default="", help="[email mode] Sender address")
     parser.add_argument("--subject", default="", help="[email mode] Subject line")
-    parser.add_argument("--body", default="", help="[email mode] Email body")
+    parser.add_argument("--body", default="", help="[email mode] Body text")
     args = parser.parse_args()
 
     if args.mode == "url":
-        results = predict_urls(args.model, args.urls)
-        for r in results:
-            print(f"{r['prediction']:>8}  (p={r['phishing_probability']:.3f})  {r['url']}")
+        if not args.urls:
+            parser.error("url mode needs at least one URL")
+        for result in predict_urls(args.model, args.urls):
+            print(f"{result['prediction']:>8}  (p={result['phishing_probability']:.3f})  "
+                  f"{result['url']}")
     else:
-        r = predict_email(args.model, args.sender, args.subject, args.body)
-        print(f"{r['prediction']:>8}  (p={r['phishing_probability']:.3f})  "
-              f"from={r['sender']!r} subject={r['subject']!r}")
+        email = {"sender": args.sender, "subject": args.subject, "body": args.body}
+        result = predict_emails(args.model, [email])[0]
+        print(f"{result['prediction']:>8}  (p={result['phishing_probability']:.3f})  "
+              f"from={result['sender']!r} subject={result['subject']!r}")
 
 
 if __name__ == "__main__":
