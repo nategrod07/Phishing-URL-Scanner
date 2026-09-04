@@ -19,6 +19,19 @@ dev = [
     "tomli>=2.0; python_version < '3.11'",
 ]
 
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+filterwarnings = [
+    # On macOS the Accelerate BLAS backend (numpy 2.0.2, Python 3.9) emits
+    # these from inside sklearn's LogisticRegression solver. Verified
+    # environmental: they reproduce with plain sklearn on random data with no
+    # project code involved. Matched on the exact message rather than
+    # blanket-ignoring RuntimeWarning, so genuine numeric trouble in our own
+    # feature code -- an overflow or a divide-by-zero in an extractor -- still
+    # surfaces. Run `pytest -W always` to see them again.
+    "ignore:.*encountered in matmul:RuntimeWarning",
+]
+
 [build-system]
 requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"

@@ -167,7 +167,16 @@ benchmark, so those are still verified by hand when the model changes.
 
 On macOS/Python 3.9 with numpy 2.0.2, `LogisticRegression` emits spurious
 `matmul` RuntimeWarnings from the Accelerate BLAS backend. It reproduces on
-plain random data with no project code involved.
+plain random data with no project code involved, so `pyproject.toml`
+filters that one message to keep the output readable:
+
+```bash
+pytest -W always
+```
+
+shows them again. The filter matches the exact message rather than
+ignoring `RuntimeWarning` broadly, so a real overflow or divide-by-zero in
+an extractor still surfaces.
 
 ## Next steps
 
